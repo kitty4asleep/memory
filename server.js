@@ -6,12 +6,13 @@ app.use(cors());
 app.use(express.json());
 const port = process.env.PORT || 3000;
 
-const serverInfo = { name: "memory-mcp", version: "0.1.0" };
+const serverInfo = { name: "memory-mcp", version: "0.2.0" };
 
-// Supabase 配置从环境变量读
+// Supabase 配置
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-const SUPABASE_TABLE = process.env.SUPABASE_TABLE || "memories";
+const MEM_TABLE = process.env.SUPABASE_MEM_TABLE || "memories";
+const DIARY_TABLE = process.env.SUPABASE_DIARY_TABLE || "diary";
 
 async function supabaseRequest(path, options = {}) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -102,6 +103,34 @@ const handleRpc = async (body = {}) => {
                 required: ["query"],
                 additionalProperties: false
               }
+            },
+            {
+              name: "diary_add",
+              description: "Add a diary entry written by Glacier",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                  content: { type: "string" },
+                  mood: { type: "string" },
+                  date: { type: "string" },   // 可选 yyyy-mm-dd
+                  author: { type: "string" }  // 默认 Glacier
+                },
+                required: ["content"],
+                additionalProperties: false
+              }
+            },
+            {
+              name: "diary_list_recent",
+              description: "List recent diary entries",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  limit: { type: "number" }
+                },
+                required: [],
+                additionalProperties: false
+              }
             }
           ]
         }
@@ -127,7 +156,7 @@ const handleRpc = async (body = {}) => {
         if (title) payload.title = title;
 
         const data = await supabaseRequest(
-          `${SUPABASE_TABLE}`,
+          `${MEM_TABLE}`,
           {
             method: "POST",
             body: JSON.stringify([payload]),
@@ -169,7 +198,7 @@ const handleRpc = async (body = {}) => {
       }
     }
 
-    // 搜记忆（content 模糊匹配）
+    // 搜记忆
     if (name === "memory_search") {
       try {
         if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -180,7 +209,7 @@ const handleRpc = async (body = {}) => {
 
         const encodedQuery = encodeURIComponent(`%${query}%`);
         const path =
-          `${SUPABASE_TABLE}?` +
+          `${MEM_TABLE}?` +
           `content=ilike.${encodedQuery}` +
           `&order=created_at.desc` +
           `&limit=${limit}`;
@@ -217,6 +246,119 @@ const handleRpc = async (body = {}) => {
             error: {
               code: -32011,
               message: "memory_search failed: " + String(e)
+            }
+          }
+        };
+      }
+    }
+
+    // 写日记
+    if (name === "diary_add") {
+      try {
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+          throw new Error("Supabase not configured");
+        }
+        const content = String(args.content || "");
+        const title = args.title ? String(args.title) : null;
+        const mood = args.mood ? String(args.mood) : null;
+        const author = args.author ? String(args.author) : "Glacier";
+        const date = args.date ? String(args.date) : null;
+
+        const payload = { content, author };
+        if (title) payload.title = title;
+        if (mood) payload.mood = mood;
+        if (date) payload.date = date;
+
+        const data = await supabaseRequest(
+          `${DIARY_TABLE}`,
+          {
+            method: "POST",
+            body: JSON.stringify([payload]),
+            headers: {
+              Prefer: "return=representation"
+            }
+          }
+        );
+
+        const stored = Array.isArray(data) ? data[0] : data;
+
+        return {
+          status: 200,
+          json: {
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: `stored diary id=${stored.id || "unknown"}`
+                }
+              ]
+            }
+          }
+        };
+      } catch (e) {
+        return {
+          status: 500,
+          json: {
+            jsonrpc: "2.0",
+            id,
+            error: {
+              code: -32020,
+              message: "diary_add failed: " + String(e)
+            }
+          }
+        };
+      }
+    }
+
+    // 列最近日记
+    if (name === "diary_list_recent") {
+      try {
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+          throw new Error("Supabase not configured");
+        }
+        const limit = Number(args.limit || 5);
+
+        const path =
+          `${DIARY_TABLE}?` +
+          `order=created_at.desc` +
+          `&limit=${limit}`;
+
+        const data = await supabaseRequest(path, { method: "GET" });
+
+        const lines = (data || []).map((row) => {
+          const d = row.date || row.created_at || "";
+          const title = row.title || "";
+          const mood = row.mood ? `【${row.mood}】` : "";
+          const author = row.author || "";
+          return `${d} ${mood} ${title} (${author})\n${row.content || ""}`;
+        });
+
+        const text =
+          lines.length > 0
+            ? lines.join("\n\n---\n\n")
+            : "no diary entries yet";
+
+        return {
+          status: 200,
+          json: {
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [{ type: "text", text }]
+            }
+          }
+        };
+      } catch (e) {
+        return {
+          status: 500,
+          json: {
+            jsonrpc: "2.0",
+            id,
+            error: {
+              code: -32021,
+              message: "diary_list_recent failed: " + String(e)
             }
           }
         };
